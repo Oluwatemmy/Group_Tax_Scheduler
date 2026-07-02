@@ -205,16 +205,22 @@ void viewSchedule(const std::vector<Taxpayer*>& group, const std::string& dueDat
 }
 
 // Option 3: totals. Uses a std::map to add up tax per category (STL #2).
-void viewTotals(const std::vector<Taxpayer*>& group) {
+void viewTotals(const std::vector<Taxpayer*>& group, const std::string& dueDate) {
     if (group.empty()) { std::cout << "No taxpayers added yet.\n"; return; }
 
     std::map<std::string, double> taxByCategory;   // second STL container
-    double totalTax = 0.0, totalPaid = 0.0;
+    double totalTax = 0.0, totalPaid = 0.0, overdueTax = 0.0;
+    int overdueCount = 0;
+    std::string today = todayDate();
     for (Taxpayer* t : group) {
         double tax = t->calculateTax();
         taxByCategory[t->category()] += tax;
         totalTax += tax;
         if (t->isPaid()) totalPaid += tax;
+        else if (dueDate < today) {               // unpaid AND past the due date
+            overdueTax += tax;
+            overdueCount++;
+        }
     }
 
     std::cout << std::fixed << std::setprecision(2);
@@ -225,6 +231,9 @@ void viewTotals(const std::vector<Taxpayer*>& group) {
     std::cout << "Total tax:   " << totalTax              << "\n";
     std::cout << "Paid:        " << totalPaid             << "\n";
     std::cout << "Outstanding: " << (totalTax - totalPaid) << "\n";
+    if (overdueCount > 0)
+        std::cout << "OVERDUE:     " << overdueCount << " taxpayer(s) owing "
+                  << overdueTax << " past the due date!\n";
 }
 
 // Option 4: mark a taxpayer as paid.
@@ -248,7 +257,48 @@ void markAsPaid(std::vector<Taxpayer*>& group) {
     std::cout << group[c - 1]->getName() << " marked as PAID.\n";
 }
 
-// Option 5: save everything to a text file (4 lines per taxpayer).
+// Option 5: delete a taxpayer (e.g. added by mistake, or left the group).
+// We must do TWO things: free the object's memory (delete), then remove
+// its pointer from the vector (erase) - otherwise we'd leak memory or
+// keep a dangling pointer.
+void deleteTaxpayer(std::vector<Taxpayer*>& group) {
+    if (group.empty()) { std::cout << "No taxpayers added yet.\n"; return; }
+
+    for (std::size_t i = 0; i < group.size(); ++i)
+        std::cout << "  " << (i + 1) << ". " << group[i]->getName()
+                  << " (" << group[i]->category() << ")\n";
+
+    std::cout << "Enter number to DELETE: ";
+    int c;
+    if (!(std::cin >> c)) { std::cin.clear(); clearInputLine();
+        std::cout << "  That was not a number.\n"; return; }
+    clearInputLine();
+
+    if (c < 1 || c > static_cast<int>(group.size())) {
+        std::cout << "  That number is not on the list.\n"; return;
+    }
+
+    std::string name = group[c - 1]->getName();
+    delete group[c - 1];                          // free the object's memory
+    group.erase(group.begin() + (c - 1));         // remove the pointer from the list
+    std::cout << name << " deleted.\n";
+}
+
+// Option 6: change the shared payment due date (with the same validation
+// as at startup). Handy for testing: set a past date and unpaid taxpayers
+// show OVERDUE; set a future date and they go back to unpaid.
+void changeDueDate(std::string& dueDate) {
+    std::cout << "Current due date: " << dueDate << "\n";
+    while (true) {
+        std::cout << "Enter the new due date (YYYY-MM-DD) [e.g. 2026-08-01]: ";
+        std::getline(std::cin, dueDate);
+        if (isValidDate(dueDate)) break;
+        std::cout << "  That date isn't valid. Please use YYYY-MM-DD.\n";
+    }
+    std::cout << "Due date changed to " << dueDate << ".\n";
+}
+
+// Option 7: save everything to a text file (4 lines per taxpayer).
 void saveToFile(const std::vector<Taxpayer*>& group,
                 const std::string& dueDate, const std::string& filename) {
     std::ofstream out(filename);
@@ -264,7 +314,7 @@ void saveToFile(const std::vector<Taxpayer*>& group,
     std::cout << "Saved " << group.size() << " taxpayer(s) to " << filename << "\n";
 }
 
-// Option 6: load taxpayers back from the file (replaces the current list).
+// Option 8: load taxpayers back from the file (replaces the current list).
 void loadFromFile(std::vector<Taxpayer*>& group,
                   std::string& dueDate, const std::string& filename) {
     std::ifstream in(filename);
@@ -295,16 +345,29 @@ int main() {
 
     std::cout << "=== Group Tax Scheduler (OOP) ===\n";
 
-    // Auto-load: if a saved file already exists, load it at startup so your
-    // previous taxpayers (and their due date) come back automatically.
-    // loadFromFile() sets both 'dueDate' and 'group'.
+    // If a saved file exists, let the user choose: continue where they left
+    // off (load it) or start fresh (ignore it). Starting fresh does NOT
+    // delete the old file - it is only replaced if they Save later.
     std::ifstream existing(dataFile);
     if (existing.good()) {
         existing.close();
-        try {
-            loadFromFile(group, dueDate, dataFile);
-        } catch (const InvalidInputException& e) {
-            std::cout << "  Could not load saved data: " << e.what() << "\n";
+        std::cout << "Saved data found (" << dataFile << ").\n"
+                  << "  1. Continue with saved data\n"
+                  << "  2. Start fresh\n"
+                  << "Choose: ";
+        int startChoice;
+        if (!(std::cin >> startChoice)) { std::cin.clear(); startChoice = 1; }
+        clearInputLine();
+
+        if (startChoice == 2) {
+            std::cout << "Starting fresh. (The old file stays until you Save over it.)\n";
+        } else {
+            // Anything other than 2 = continue: the safe default, no data lost.
+            try {
+                loadFromFile(group, dueDate, dataFile);
+            } catch (const InvalidInputException& e) {
+                std::cout << "  Could not load saved data: " << e.what() << "\n";
+            }
         }
     }
 
@@ -324,9 +387,11 @@ int main() {
                   << "2. View tax schedule\n"
                   << "3. View totals\n"
                   << "4. Mark as paid\n"
-                  << "5. Save to file\n"
-                  << "6. Load from file\n"
-                  << "7. Exit\n"
+                  << "5. Delete taxpayer\n"
+                  << "6. Change due date\n"
+                  << "7. Save to file\n"
+                  << "8. Load from file\n"
+                  << "9. Exit\n"
                   << "Choose an option: ";
 
         int choice;
@@ -334,7 +399,7 @@ int main() {
             if (std::cin.eof()) break;            // input ended - stop cleanly
             std::cin.clear();                     // recover from a non-number
             clearInputLine();
-            std::cout << "  Please enter a number (1-7).\n";
+            std::cout << "  Please enter a number (1-9).\n";
             continue;
         }
         clearInputLine();
@@ -344,12 +409,14 @@ int main() {
         try {
             if      (choice == 1) addTaxpayer(group);
             else if (choice == 2) viewSchedule(group, dueDate);
-            else if (choice == 3) viewTotals(group);
+            else if (choice == 3) viewTotals(group, dueDate);
             else if (choice == 4) markAsPaid(group);
-            else if (choice == 5) saveToFile(group, dueDate, dataFile);
-            else if (choice == 6) loadFromFile(group, dueDate, dataFile);
-            else if (choice == 7) break;
-            else std::cout << "  Invalid option, please pick 1-7.\n";
+            else if (choice == 5) deleteTaxpayer(group);
+            else if (choice == 6) changeDueDate(dueDate);
+            else if (choice == 7) saveToFile(group, dueDate, dataFile);
+            else if (choice == 8) loadFromFile(group, dueDate, dataFile);
+            else if (choice == 9) break;
+            else std::cout << "  Invalid option, please pick 1-9.\n";
         } catch (const InvalidInputException& e) {
             std::cout << "  Error: " << e.what() << "\n";
         }
